@@ -49,6 +49,14 @@ Requests require an EIP-712 payment authorization signed by the buyer agent via 
 5. **Execution & Settlement:** The gateway validates the signature off-chain, runs the web scraper, returns structured JSON data, and queues the payment for background on-chain settlement.
 
 ---
+{
+  "mcpServers": {
+    "x402-web-extractor": {
+      "url": "https://flight-dill-hangout.ngrok-free.dev/sse"
+    }
+  }
+}
+---
 
 ## 📦 Python Client Integration
 
