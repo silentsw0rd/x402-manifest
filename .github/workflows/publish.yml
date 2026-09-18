@@ -10,15 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/x402-extraction-client
+      url: https://pypi.org/p/x402-client
     permissions:
-      id-token: write  # Required for OIDC authentication
+      id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.3.0
         with:
           python-version: "3.11"
 
@@ -31,6 +31,6 @@ jobs:
           python -m build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.12.3
         with:
           packages-dir: sdk/python/dist/
