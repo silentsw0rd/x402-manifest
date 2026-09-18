@@ -27,6 +27,24 @@ USDC_BASE_CONTRACT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 BASE_CHAIN_ID = 8453
 PRICE_USDC_UNITS = 5000
 
+# Base L2 Public RPC & Contract Setup
+BASE_RPC_URL = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+
+USDC_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function",
+    }
+]
+
+usdc_contract = w3.eth.contract(
+    address=Web3.to_checksum_address(USDC_BASE_CONTRACT),
+    abi=USDC_ABI
+)
 
 class ExtractPayload(BaseModel):
     url: str = Field(..., description="Target URL to scrape.")
@@ -105,9 +123,23 @@ def verify_and_parse_eip712(payment_signature_b64: str) -> Tuple[str, str, int]:
 
 
 def verify_payment_signature(sig_header: str) -> Dict[str, Any]:
-    """Helper wrapper for EIP-712 signature verification."""
+    """Helper wrapper for EIP-712 signature and on-chain balance verification."""
     try:
         signer, nonce, valid_before = verify_and_parse_eip712(sig_header)
+        
+        # Check on-chain USDC balance via Base L2 RPC
+        checksum_signer = Web3.to_checksum_address(signer)
+        balance = usdc_contract.functions.balanceOf(checksum_signer).call()
+        
+        if balance < PRICE_USDC_UNITS:
+            logger.warning(f"Signature rejected: {signer} has insufficient USDC balance ({balance} units).")
+            return {
+                "is_valid": False,
+                "from": None,
+                "nonce": None,
+                "reason": f"Signer address {signer} holds less than required $0.005 USDC."
+            }
+
         return {"is_valid": True, "from": signer, "nonce": nonce, "reason": None}
     except Exception as e:
         return {"is_valid": False, "from": None, "nonce": None, "reason": str(e)}
