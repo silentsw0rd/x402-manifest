@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "x402-extraction-client"  # or x402-agent-client / x402-py-client
+name = "x402-extraction-client-44mk1"
 version = "0.1.0"
 description = "Autonomous HTTP 402 payment and EIP-712 signature client for AI agent data extraction."
 readme = "README.md"
