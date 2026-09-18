@@ -2,19 +2,24 @@ import asyncio
 import base64
 import json
 import os
+import logging
 import aiosqlite
 from web3 import AsyncWeb3
 from eth_account import Account
 from dotenv import load_dotenv
+from nonce_tracker import nonce_db
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("x402-worker")
 
 load_dotenv()
 
-RPC_URL = "https://mainnet.base.org"
+RPC_URL = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+RELAYER_PRIVATE_KEY = os.getenv("RELAYER_PRIVATE_KEY") or os.getenv("AGENT_PRIVATE_KEY")
 USDC_CONTRACT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-PRIVATE_KEY = os.getenv("AGENT_PRIVATE_KEY")
 DB_PATH = "storage/nonce_tracker.db"
+MAX_GAS_PRICE_GWEI = float(os.getenv("MAX_GAS_PRICE_GWEI", "1.5"))
 
-# Minimal ABI for EIP-3009 receiveWithAuthorization
 EIP3009_ABI = [
     {
         "inputs": [
@@ -35,6 +40,7 @@ EIP3009_ABI = [
     }
 ]
 
+
 def split_signature(sig_hex: str):
     sig_bytes = bytes.fromhex(sig_hex.replace("0x", ""))
     r = sig_bytes[:32]
@@ -44,19 +50,44 @@ def split_signature(sig_hex: str):
         v += 27
     return v, r, s
 
+
+async def is_gas_price_acceptable(w3: AsyncWeb3) -> tuple[bool, float]:
+    """Queries current network gas price asynchronously and checks against MAX_GAS_PRICE_GWEI."""
+    try:
+        current_gas_wei = await w3.eth.gas_price
+        current_gas_gwei = float(w3.from_wei(current_gas_wei, "gwei"))
+        
+        if current_gas_gwei > MAX_GAS_PRICE_GWEI:
+            return False, current_gas_gwei
+        return True, current_gas_gwei
+    except Exception as e:
+        logger.error(f"Failed to fetch gas price from Base RPC: {e}")
+        return False, 0.0
+
+
 async def process_queue():
-    if not PRIVATE_KEY:
-        print("[!] Error: AGENT_PRIVATE_KEY is missing from .env file!")
+    if not RELAYER_PRIVATE_KEY:
+        logger.error("RELAYER_PRIVATE_KEY is missing from .env file!")
         return
 
     w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(RPC_URL))
-    account = Account.from_key(PRIVATE_KEY)
+    account = Account.from_key(RELAYER_PRIVATE_KEY)
     usdc = w3.eth.contract(address=w3.to_checksum_address(USDC_CONTRACT), abi=EIP3009_ABI)
 
-    print(f"[*] Settlement Worker active. Relayer wallet: {account.address}")
+    logger.info(f"Settlement Worker active. Relayer wallet: {account.address} | Gas Ceiling: {MAX_GAS_PRICE_GWEI} Gwei")
 
     while True:
         try:
+            # 1. Check gas ceiling guardrail
+            gas_ok, current_gwei = await is_gas_price_acceptable(w3)
+            if not gas_ok:
+                logger.warning(
+                    f"Gas price ({current_gwei:.3f} Gwei) exceeds ceiling ({MAX_GAS_PRICE_GWEI} Gwei). Pausing settlements."
+                )
+                await asyncio.sleep(10)
+                continue
+
+            # 2. Process pending items in SQLite
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute(
                     "SELECT id, payment_header FROM pending_settlements WHERE status='pending' LIMIT 5"
@@ -74,10 +105,9 @@ async def process_queue():
 
                         v, r, s = split_signature(sig)
 
-                        # Fetch transaction nonce for relayer wallet
                         tx_nonce = await w3.eth.get_transaction_count(account.address)
+                        gas_price = await w3.eth.gas_price
 
-                        # Build transaction
                         tx = await usdc.functions.receiveWithAuthorization(
                             w3.to_checksum_address(msg["from"]),
                             w3.to_checksum_address(msg["to"]),
@@ -92,28 +122,31 @@ async def process_queue():
                             "from": account.address,
                             "nonce": tx_nonce,
                             "chainId": 8453,
-                            "gasPrice": await w3.eth.gas_price
+                            "gasPrice": gas_price
                         })
 
                         signed_tx = account.sign_transaction(tx)
                         raw_tx = getattr(signed_tx, "raw_transaction", getattr(signed_tx, "rawTransaction", None))
                         tx_hash = await w3.eth.send_raw_transaction(raw_tx)
-                        print(f"[+] Settled tx on Base L2! Hash: {tx_hash.hex()}")
+                        logger.info(f"Settled tx on Base L2! Hash: {tx_hash.hex()}")
 
-                        # Mark as settled in SQLite
                         await db.execute("UPDATE pending_settlements SET status='settled' WHERE id=?", (row_id,))
                         await db.commit()
 
                     except Exception as row_error:
-                        print(f"[!] Error settling row {row_id}: {row_error}")
-                        # Mark as failed to prevent infinite retry loops on bad signatures
+                        logger.error(f"Error settling row {row_id}: {row_error}")
                         await db.execute("UPDATE pending_settlements SET status='failed' WHERE id=?", (row_id,))
                         await db.commit()
 
         except Exception as e:
-            print(f"[!] Worker loop error: {e}")
+            logger.error(f"Worker loop error: {e}")
 
         await asyncio.sleep(10)
 
+
 if __name__ == "__main__":
-    asyncio.run(process_queue())
+    async def main():
+        await nonce_db.init_db()
+        await process_queue()
+
+    asyncio.run(main())
