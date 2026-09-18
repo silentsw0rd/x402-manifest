@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "x402-web-extractor"
+version = "0.1.0"
+description = "x402 paid web extraction tool for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx",
+    "eth-account",
+    "pydantic",
+    "langchain-core"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

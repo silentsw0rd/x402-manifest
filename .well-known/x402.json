@@ -1,0 +1,15 @@
+{
+  "x402Version": "1.0",
+  "name": "x402 Web Extraction API",
+  "description": "Structured web data extraction powered by Playwright and local Ollama Qwen2.5",
+  "endpoint": "https://flight-dill-hangout.ngrok-free.dev/api/v1/extract",
+  "accepts": [
+    {
+      "network": "eip155:8453",
+      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "payTo": "0xd2eA78C3eeA0Ed3275b2465915527eAF59c75b00",
+      "amount": "5000",
+      "humanReadableAmount": "$0.005 USDC"
+    }
+  ]
+}

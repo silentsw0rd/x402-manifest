@@ -1,0 +1,64 @@
+# Coinbase CDP Secrets
+cdp_api_key.json
+*.json
+
+# Environment Secrets
+.env
+
+# Environment Variables & Secrets (CRITICAL)
+.env
+.env.*
+*.pem
+*.key
+
+# Python Execution & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+ENV/
+
+# Project Storage & Local Databases
+storage/*.db
+storage/*.sqlite
+storage/*.sqlite3
+.playwright/
+downloads/
+
+# IDE & OS System Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tunnel & Server Logs
+*.log
+*.egg-info/
+build/
+dist/
+__pycache__/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime Logs & Debug Traces
+logs/
+*.log
+
+# Storage & Databases
+storage/
+*.sqlite
+*.sqlite3
+*.db
+
+# Python & Build Artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+*.egg-info/
