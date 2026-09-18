@@ -35,3 +35,7 @@ Thumbs.db
 
 # Tunnel & Server Logs
 *.log
+*.egg-info/
+build/
+dist/
+__pycache__/

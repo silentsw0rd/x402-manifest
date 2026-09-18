@@ -2,6 +2,7 @@ import json
 import base64
 import os
 import logging
+import traceback
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, Tuple
 from pydantic import BaseModel, Field, create_model
@@ -15,17 +16,19 @@ from dotenv import load_dotenv
 from agent_engine import extract_web_data as run_agent_extraction
 from nonce_tracker import nonce_db
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("x402-server")
 
 # Load environment variables
 load_dotenv()
 os.makedirs("storage", exist_ok=True)
 
-# Mainnet USDC Configuration
+# Mainnet USDC & Network Configuration
 RECEIVER_ADDRESS = os.getenv("RECEIVER_ADDRESS", "0xd2eA78C3eeA0Ed3275b2465915527eAF59c75b00")
 USDC_BASE_CONTRACT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 BASE_CHAIN_ID = 8453
-PRICE_USDC_UNITS = 5000
+PRICE_USDC_UNITS = 5000  # $0.005 USDC
 
 # Base L2 Public RPC & Contract Setup
 BASE_RPC_URL = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
@@ -45,6 +48,7 @@ usdc_contract = w3.eth.contract(
     address=Web3.to_checksum_address(USDC_BASE_CONTRACT),
     abi=USDC_ABI
 )
+
 
 class ExtractPayload(BaseModel):
     url: str = Field(..., description="Target URL to scrape.")
@@ -145,16 +149,10 @@ def verify_payment_signature(sig_header: str) -> Dict[str, Any]:
         return {"is_valid": False, "from": None, "nonce": None, "reason": str(e)}
 
 
-def queue_settlement_in_db(client_address: str, signature_envelope: str, nonce: str):
-    """Queues verified signature into SQLite for background broadcasting."""
-    # Add record to pending settlements database
-    pass
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await nonce_db.init_db()
-    print("[+] Nonce Database Initialized.")
+    logger.info("[+] Nonce Database Initialized.")
     yield
 
 
@@ -223,51 +221,62 @@ async def extract_web_data_get(url: str, request: Request):
             detail=f"Web extraction failed: {str(e)}. Wallet was NOT charged."
         )
 
-    queue_settlement_in_db(
-        client_address=validation_result["from"],
-        signature_envelope=sig_header,
-        nonce=validation_result["nonce"]
-    )
+    await nonce_db.add_pending_settlement(sig_header)
     return JSONResponse(status_code=200, content=extracted_data)
 
 
 @app.post("/api/v1/extract")
-async def extract_web_data_post(payload: ExtractPayload, request: Request):
+async def extract(request: Request):
     sig_header = request.headers.get("PAYMENT-SIGNATURE")
-    
+
+    # 1. Challenge phase: Return HTTP 402 if no signature is provided
     if not sig_header:
-        payment_spec = build_x402_spec()
+        spec = {
+            "accepts": [{
+                "scheme": "exact",
+                "network": f"eip155:{BASE_CHAIN_ID}",
+                "asset": USDC_BASE_CONTRACT,
+                "amount": str(PRICE_USDC_UNITS),
+                "payTo": RECEIVER_ADDRESS
+            }]
+        }
+        b64_spec = base64.b64encode(json.dumps(spec).encode("utf-8")).decode("utf-8")
         return JSONResponse(
             status_code=402,
-            headers={"PAYMENT-REQUIRED": payment_spec["encoded_header"]},
-            content={"detail": "Payment required", "spec": payment_spec["raw"]}
+            headers={"PAYMENT-REQUIRED": b64_spec},
+            content={"detail": "Payment Required", "spec": spec}
         )
 
-    validation_result = verify_payment_signature(sig_header)
-    if not validation_result["is_valid"]:
-        raise HTTPException(status_code=400, detail=validation_result["reason"])
-
-    target_model = build_dynamic_pydantic_model(payload.schema_spec)
-
+    # 2. Signature verification & extraction phase
     try:
-        extracted_data = await run_agent_extraction(
-            url=payload.url, 
-            response_model=target_model
-        )
-        if not extracted_data:
-            raise ValueError("Scraper returned an empty payload")
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Extraction failed: {str(e)}. Payment signature was NOT charged."
-        )
+        sig_result = verify_payment_signature(sig_header)
+        if not sig_result["is_valid"]:
+            raise HTTPException(status_code=400, detail=sig_result["reason"])
 
-    queue_settlement_in_db(
-        client_address=validation_result["from"],
-        signature_envelope=sig_header,
-        nonce=validation_result["nonce"]
-    )
-    return JSONResponse(status_code=200, content=extracted_data)
+        body = await request.json()
+        target_url = body.get("url")
+        schema_spec = body.get("schema_spec")
+
+        if not target_url:
+            raise HTTPException(status_code=400, detail="Missing required field: url")
+
+        # Fallback handling for agent_engine signature variations
+        try:
+            extracted_data = await run_agent_extraction(target_url, schema_spec)
+        except TypeError:
+            extracted_data = await run_agent_extraction(target_url)
+
+        await nonce_db.add_pending_settlement(sig_header)
+
+        return {"status": "success", "data": extracted_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("\n--- SERVER EXCEPTION STACK TRACE ---")
+        traceback.print_exc()
+        print("------------------------------------\n")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
 if __name__ == "__main__":

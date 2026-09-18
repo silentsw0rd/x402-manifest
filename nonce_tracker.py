@@ -1,37 +1,42 @@
+import os
 import hashlib
 import time
 import aiosqlite
+import logging
 from typing import Optional, Tuple
 
+logger = logging.getLogger("x402-nonce")
+
 DB_PATH = "storage/nonce_tracker.db"
+
 
 class NonceTracker:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     async def init_db(self):
-        """Creates tables for replay tracking and pending settlement queues."""
+        """Initializes signature tracking and pending_settlements tables."""
         async with aiosqlite.connect(self.db_path) as db:
-            # Replay protection table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS used_signatures (
                     signature_hash TEXT PRIMARY KEY,
-                    payer_address TEXT,
-                    nonce TEXT,
-                    timestamp REAL
-                )
+                    payer_address TEXT NOT NULL,
+                    nonce TEXT NOT NULL,
+                    timestamp REAL NOT NULL
+                );
             """)
-            # On-chain settlement queue table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS pending_settlements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    payment_header TEXT UNIQUE,
+                    payment_header TEXT NOT NULL,
                     payer TEXT,
-                    status TEXT DEFAULT 'pending',
+                    status TEXT NOT NULL DEFAULT 'pending',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
+                );
             """)
             await db.commit()
+            logger.info("Database initialized with nonce tracking and settlement schemas.")
 
     @staticmethod
     def compute_hash(signature_b64: str) -> str:
@@ -64,14 +69,19 @@ class NonceTracker:
 
         return True, "Signature accepted"
 
-    async def queue_settlement(self, payment_header: str, payer: str):
-        """Helper method to queue verified payment signatures for background worker processing."""
+    async def add_pending_settlement(self, payment_header: str, payer: Optional[str] = None):
+        """Queues a signed payment header for background on-chain settlement."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO pending_settlements (payment_header, payer) VALUES (?, ?)",
+                "INSERT INTO pending_settlements (payment_header, payer, status) VALUES (?, ?, 'pending')",
                 (payment_header, payer)
             )
             await db.commit()
+            logger.info("Queued signature payload to pending_settlements table.")
+
+    async def queue_settlement(self, payment_header: str, payer: str):
+        """Helper alias to queue verified payment signatures."""
+        await self.add_pending_settlement(payment_header, payer)
 
     async def purge_old_nonces(self, max_age_seconds: int = 86400):
         """Housekeeping background job to clean up signatures older than 24h."""
@@ -80,4 +90,6 @@ class NonceTracker:
             await db.execute("DELETE FROM used_signatures WHERE timestamp < ?", (cutoff,))
             await db.commit()
 
+
+# Singleton instance
 nonce_db = NonceTracker()
