@@ -3,10 +3,11 @@ import base64
 import os
 import time
 import logging
+import sys
 import traceback
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, Tuple
-from pydantic import TypeAdapter, ValidationError, BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from web3 import Web3
@@ -118,7 +119,6 @@ def verify_and_parse_eip712(payment_signature_b64: str) -> Tuple[str, str, int]:
         if int(msg["value"]) < PRICE_USDC_UNITS:
             raise ValueError("Insufficient payment amount")
 
-        # Verify payment signature against EIP-712 payment payload
         signable_message = encode_typed_data(full_message=payload_data)
         recovered_signer = Account.recover_message(signable_message, signature=signature)
 
@@ -127,7 +127,6 @@ def verify_and_parse_eip712(payment_signature_b64: str) -> Tuple[str, str, int]:
 
         payer_wallet = recovered_signer
 
-        # Handle Session Key Delegation if present
         if session_info:
             session_key = session_info.get("session_key")
             root_wallet = session_info.get("root_wallet")
@@ -141,7 +140,6 @@ def verify_and_parse_eip712(payment_signature_b64: str) -> Tuple[str, str, int]:
             if recovered_signer.lower() != session_key.lower():
                 raise ValueError("Payment payload was not signed by the delegated session key")
 
-            # Reconstruct and verify the Root Wallet's EIP-712 Session Grant
             grant_typed_data = {
                 "types": {
                     "EIP712Domain": [{"name": "name", "type": "string"}, {"name": "version", "type": "string"}],
@@ -165,7 +163,6 @@ def verify_and_parse_eip712(payment_signature_b64: str) -> Tuple[str, str, int]:
             if recovered_root.lower() != root_wallet.lower():
                 raise ValueError("Session delegation proof verification failed: root signer mismatch")
 
-            # On-chain USDC balance check targets the funding root wallet
             payer_wallet = recovered_root
 
         nonce = str(msg.get("nonce", signature[:10]))
@@ -181,7 +178,6 @@ def verify_payment_signature(sig_header: str) -> Dict[str, Any]:
     try:
         signer, nonce, valid_before = verify_and_parse_eip712(sig_header)
         
-        # Check on-chain USDC balance via Base L2 RPC for the paying account
         checksum_signer = Web3.to_checksum_address(signer)
         balance = usdc_contract.functions.balanceOf(checksum_signer).call()
         
@@ -279,7 +275,6 @@ async def extract_web_data_get(url: str, request: Request):
 async def extract(request: Request):
     sig_header = request.headers.get("PAYMENT-SIGNATURE")
 
-    # 1. Challenge phase: Return HTTP 402 if no signature is provided
     if not sig_header:
         spec = {
             "accepts": [{
@@ -297,7 +292,6 @@ async def extract(request: Request):
             content={"detail": "Payment Required", "spec": spec}
         )
 
-    # 2. Signature verification & extraction phase
     try:
         sig_result = verify_payment_signature(sig_header)
         if not sig_result["is_valid"]:
@@ -322,12 +316,14 @@ async def extract(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        print("\n--- SERVER EXCEPTION STACK TRACE ---")
-        traceback.print_exc()
-        print("------------------------------------\n")
+        logger.error(f"Server exception: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    except Exception as fatal_err:
+        logger.critical(f"Fatal startup failure in server.py: {fatal_err}\n{traceback.format_exc()}")
+        sys.exit(1)
